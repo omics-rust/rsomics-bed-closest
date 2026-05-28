@@ -104,20 +104,31 @@ fn find_closest(b: &[BRecord], a_start: u64, a_end: u64) -> Vec<(&BRecord, i64)>
             best.push((&b[r], d));
         }
         // Once the B record starts beyond a_end + best_dist, no closer record can follow.
-        if best_dist >= 0 && b[r].start > a_end + best_dist as u64 {
+        // Guard against overflow when best_dist is i64::MAX (no hit found yet).
+        if best_dist >= 0 && best_dist < i64::MAX && b[r].start > a_end + best_dist as u64 {
             break;
         }
         r += 1;
     }
 
     // Scan left from pos-1.
+    // Records are sorted by start, so as l decreases, b[l].start also decreases.
+    // The minimum possible distance between A and any record at index ≤ l is
+    //   a_start.saturating_sub(b[l].end)
+    // because b[l].end ≥ b[l].start and b[j].start ≤ b[l].start for j ≤ l.
+    // Once that lower-bound exceeds best_dist, no improvement is possible to the left.
     if pos > 0 {
         let mut l = pos - 1;
         loop {
+            // Early exit: all records to the left have end ≤ b[l].end ≤ a_start (or less),
+            // so their distance ≥ a_start - b[l].end ≥ best_dist already found.
+            if best_dist >= 0 && a_start.saturating_sub(b[l].end) as i64 > best_dist {
+                break;
+            }
             let d = check(l);
             if d < best_dist {
                 best_dist = d;
-                // Keep only left-side record (right-side ones will be re-checked below).
+                // Drop right-side records that are no longer optimal.
                 best.retain(|(_, bd)| *bd == best_dist);
             }
             if d == best_dist {
@@ -130,7 +141,7 @@ fn find_closest(b: &[BRecord], a_start: u64, a_end: u64) -> Vec<(&BRecord, i64)>
         }
     }
 
-    // Filter to only best_dist, dedup.
+    // Filter to only best_dist.
     best.retain(|(_, d)| *d == best_dist);
     best
 }
