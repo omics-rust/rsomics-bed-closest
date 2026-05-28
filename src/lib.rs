@@ -64,6 +64,10 @@ fn load_b(path: &Path) -> Result<HashMap<String, Vec<BRecord>>> {
 
 /// Distance between interval [as, ae) and [bs, be) — 0 if they overlap.
 fn distance(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> i64 {
+    // Overlap condition: neither interval is entirely to the left/right of the other.
+    // clippy::manual_range_contains does not apply here — this is a 2-interval
+    // overlap test, not a single-point containment test.
+    #[allow(clippy::manual_range_contains)]
     if a_start < b_end && b_start < a_end {
         // Overlapping.
         0
