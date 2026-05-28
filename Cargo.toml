@@ -1,0 +1,28 @@
+[package]
+name = "rsomics-bed-closest"
+version = "0.1.0"
+description = "Find the closest feature in B for each interval in A — bedtools closest equivalent"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/omics-rust/rsomics-bed-closest"
+authors = ["Zane Leong <efd@live.com>"]
+categories = ["science", "command-line-utilities"]
+keywords = ["bed", "closest", "bioinformatics", "bedtools", "genomics"]
+
+[[bin]]
+name = "rsomics-bed-closest"
+path = "src/main.rs"
+
+[lib]
+name = "rsomics_bed_closest"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+rsomics-common = { version = "0.6" }
+rsomics-help = { version = "0.3" }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
