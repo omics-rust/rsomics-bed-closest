@@ -105,7 +105,7 @@ fn find_closest(b: &[BRecord], a_start: u64, a_end: u64) -> Vec<(&BRecord, i64)>
         }
         // Once the B record starts beyond a_end + best_dist, no closer record can follow.
         // Guard against overflow when best_dist is i64::MAX (no hit found yet).
-        if best_dist >= 0 && best_dist < i64::MAX && b[r].start > a_end + best_dist as u64 {
+        if (0..i64::MAX).contains(&best_dist) && b[r].start > a_end + best_dist as u64 {
             break;
         }
         r += 1;
