@@ -17,6 +17,7 @@
 //! checked for equidistant ties. O(N log M) per chromosome.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
@@ -76,7 +77,7 @@ fn distance(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> i64 {
 }
 
 /// Find all B records at minimum distance to [a_start, a_end).
-fn find_closest<'a>(b: &'a [BRecord], a_start: u64, a_end: u64) -> Vec<(&'a BRecord, i64)> {
+fn find_closest(b: &[BRecord], a_start: u64, a_end: u64) -> Vec<(&BRecord, i64)> {
     if b.is_empty() {
         return vec![];
     }
