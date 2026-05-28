@@ -40,19 +40,19 @@ fn basic_closest_correctness() {
     assert_eq!(dist0, 100, "A1 distance wrong: {dist0}");
 
     // A2 [500,600): equidistant to B1 [300,400) and B2 [700,800) — both at distance 100.
-    for idx in 1..=2 {
-        let dist: i64 = lines[idx]
+    for line in lines.iter().skip(1).take(2) {
+        let dist: i64 = line
             .split('\t')
             .next_back()
             .unwrap()
             .trim()
             .parse()
             .unwrap();
-        assert_eq!(dist, 100, "A2 line[{idx}] distance wrong: {dist}");
+        assert_eq!(dist, 100, "A2 distance wrong: {dist}");
         assert!(
-            lines[idx].starts_with("chr1\t500\t600"),
-            "A2 line[{idx}] A columns wrong: {}",
-            lines[idx]
+            line.starts_with("chr1\t500\t600"),
+            "A2 A columns wrong: {}",
+            line
         );
     }
 
