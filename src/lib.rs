@@ -1,20 +1,10 @@
-//! Find the closest feature in B for each A interval — bedtools closest equivalent.
+//! Find the closest feature in B for each A interval — `bedtools closest`.
 //!
-//! For each A interval, reports the nearest B interval(s). If A overlaps B,
-//! distance is 0 and the overlapping B is reported. Both files must be sorted
-//! by (chrom, start) — the same requirement as `bedtools closest`.
-//!
-//! Output format: A columns, then B columns, then distance (bp).
-//! When multiple B intervals are equidistant, all are reported (one per line),
-//! matching `bedtools closest` default.
-//!
-//! When there is no B interval on the same chromosome, the A interval is
-//! emitted with `.` for all B columns and `-1` for distance, matching
-//! bedtools `-io` absent-handling (default mode).
-//!
-//! Algorithm: B intervals are grouped by chromosome into sorted Vec; for each
-//! A record, a binary search finds the candidate and then neighbours are
-//! checked for equidistant ties. O(N log M) per chromosome.
+//! Each A row is paired with the nearest B interval(s) on the same chromosome;
+//! all B at the minimum distance are emitted, in B-file order (the bedtools tie
+//! rule). Output is A columns then B columns; `report_distance` adds a trailing
+//! signed-distance column (`bedtools closest -d`). Overlap is distance 0,
+//! book-ended is 1. When no B shares the chromosome, B columns are `.`/-1/-1.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -62,113 +52,65 @@ fn load_b(path: &Path) -> Result<HashMap<String, Vec<BRecord>>> {
     Ok(map)
 }
 
-/// Distance between interval [as, ae) and [bs, be) — 0 if they overlap.
+/// Distance between [a_start, a_end) and [b_start, b_end): 0 if they overlap,
+/// otherwise the gap plus one, matching `bedtools closest -d` (book-ended
+/// features are distance 1, not 0, so they never tie with a true overlap).
+#[allow(clippy::manual_range_contains)]
 fn distance(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> i64 {
-    // Overlap condition: neither interval is entirely to the left/right of the other.
-    // clippy::manual_range_contains does not apply here — this is a 2-interval
-    // overlap test, not a single-point containment test.
-    #[allow(clippy::manual_range_contains)]
     if a_start < b_end && b_start < a_end {
-        // Overlapping.
         0
     } else if a_end <= b_start {
-        // A is left of B.
-        (b_start - a_end) as i64
+        (b_start - a_end) as i64 + 1
     } else {
-        // B is left of A.
-        (a_start - b_end) as i64
+        (a_start - b_end) as i64 + 1
     }
 }
 
-/// Find all B records at minimum distance to [a_start, a_end).
+/// All B records at minimum distance to [a_start, a_end), in B-file (start) order
+/// — the tie semantics of `bedtools closest`. B is sorted by start; two passes
+/// (min, then collect) keep ties complete and ordered, which an early-exit scan
+/// gets wrong when several B share the minimum.
 fn find_closest(b: &[BRecord], a_start: u64, a_end: u64) -> Vec<(&BRecord, i64)> {
-    if b.is_empty() {
+    let mut best = i64::MAX;
+    for r in b {
+        let d = distance(a_start, a_end, r.start, r.end);
+        if d < best {
+            best = d;
+        }
+    }
+    if best == i64::MAX {
         return vec![];
     }
-
-    // Binary search for first B record with start >= a_start.
-    let pos = b.partition_point(|r| r.start < a_start);
-
-    let mut best_dist = i64::MAX;
-    let mut best: Vec<(&BRecord, i64)> = Vec::new();
-
-    // Expand outward from pos to find the closest record(s).
-    // Scan left from pos-1 and right from pos.
-    let check = |idx: usize| -> i64 { distance(a_start, a_end, b[idx].start, b[idx].end) };
-
-    // Scan right from pos.
-    let mut r = pos;
-    while r < b.len() {
-        let d = check(r);
-        if d < best_dist {
-            best_dist = d;
-            best.clear();
-        }
-        if d == best_dist {
-            best.push((&b[r], d));
-        }
-        // Once the B record starts beyond a_end + best_dist, no closer record can follow.
-        // Guard against overflow when best_dist is i64::MAX (no hit found yet).
-        if (0..i64::MAX).contains(&best_dist) && b[r].start > a_end + best_dist as u64 {
-            break;
-        }
-        r += 1;
-    }
-
-    // Scan left from pos-1.
-    // Records are sorted by start, so as l decreases, b[l].start also decreases.
-    // The minimum possible distance between A and any record at index ≤ l is
-    //   a_start.saturating_sub(b[l].end)
-    // because b[l].end ≥ b[l].start and b[j].start ≤ b[l].start for j ≤ l.
-    // Once that lower-bound exceeds best_dist, no improvement is possible to the left.
-    if pos > 0 {
-        let mut l = pos - 1;
-        loop {
-            // Early exit: all records to the left have end ≤ b[l].end ≤ a_start (or less),
-            // so their distance ≥ a_start - b[l].end ≥ best_dist already found.
-            if best_dist >= 0 && a_start.saturating_sub(b[l].end) as i64 > best_dist {
-                break;
-            }
-            let d = check(l);
-            if d < best_dist {
-                best_dist = d;
-                // Drop right-side records that are no longer optimal.
-                best.retain(|(_, bd)| *bd == best_dist);
-            }
-            if d == best_dist {
-                best.push((&b[l], d));
-            }
-            if l == 0 {
-                break;
-            }
-            l -= 1;
-        }
-    }
-
-    // Filter to only best_dist.
-    best.retain(|(_, d)| *d == best_dist);
-    best
+    b.iter()
+        .map(|r| (r, distance(a_start, a_end, r.start, r.end)))
+        .filter(|(_, d)| *d == best)
+        .collect()
 }
 
-/// Run closest on file A vs file B, writing to `output`.
-///
-/// Output columns: all A columns, all B columns, distance.
-pub fn closest(a_path: &Path, b_path: &Path, output: &mut dyn Write) -> Result<()> {
+/// Run closest on file A vs file B, writing to `output`. `report_distance` appends
+/// a signed-distance column (`bedtools closest -d`); off by default, matching bedtools.
+pub fn closest(
+    a_path: &Path,
+    b_path: &Path,
+    report_distance: bool,
+    output: &mut dyn Write,
+) -> Result<()> {
     let b_map = load_b(b_path)?;
     let file = File::open(a_path)
         .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", a_path.display())))?;
-    closest_reader(BufReader::new(file), &b_map, output)
+    closest_reader(BufReader::new(file), &b_map, report_distance, output)
 }
 
 /// Same as [`closest`] but reads A from stdin.
-pub fn closest_stdin(b_path: &Path, output: &mut dyn Write) -> Result<()> {
+pub fn closest_stdin(b_path: &Path, report_distance: bool, output: &mut dyn Write) -> Result<()> {
     let b_map = load_b(b_path)?;
-    closest_reader(BufReader::new(io::stdin()), &b_map, output)
+    closest_reader(BufReader::new(io::stdin()), &b_map, report_distance, output)
 }
 
 fn closest_reader<R: io::Read>(
     reader: BufReader<R>,
     b_map: &HashMap<String, Vec<BRecord>>,
+    report_distance: bool,
     output: &mut dyn Write,
 ) -> Result<()> {
     let mut out = BufWriter::new(output);
@@ -201,26 +143,36 @@ fn closest_reader<R: io::Read>(
         let b_ivs = b_map.get(chrom).map(Vec::as_slice).unwrap_or(&[]);
         let hits = find_closest(b_ivs, start, end);
 
+        write!(out, "{chrom}\t{start}\t{end}").map_err(RsomicsError::Io)?;
+        if !a_rest.is_empty() {
+            write!(out, "\t{a_rest}").map_err(RsomicsError::Io)?;
+        }
         if hits.is_empty() {
-            // No B on this chrom — emit with null B and distance -1.
-            write!(out, "{chrom}\t{start}\t{end}").map_err(RsomicsError::Io)?;
-            if !a_rest.is_empty() {
-                write!(out, "\t{a_rest}").map_err(RsomicsError::Io)?;
+            // No B on this chromosome: bedtools emits `.`/-1/-1 (then -1 distance under -d).
+            out.write_all(b"\t.\t-1\t-1").map_err(RsomicsError::Io)?;
+            if report_distance {
+                out.write_all(b"\t-1").map_err(RsomicsError::Io)?;
             }
-            out.write_all(b"\t.\t.\t.\t-1\n")
-                .map_err(RsomicsError::Io)?;
+            out.write_all(b"\n").map_err(RsomicsError::Io)?;
         } else {
-            for (b_rec, dist) in hits {
-                write!(out, "{chrom}\t{start}\t{end}").map_err(RsomicsError::Io)?;
-                if !a_rest.is_empty() {
-                    write!(out, "\t{a_rest}").map_err(RsomicsError::Io)?;
+            let a_prefix = if a_rest.is_empty() {
+                format!("{chrom}\t{start}\t{end}")
+            } else {
+                format!("{chrom}\t{start}\t{end}\t{a_rest}")
+            };
+            for (idx, (b_rec, dist)) in hits.iter().enumerate() {
+                if idx > 0 {
+                    write!(out, "{a_prefix}").map_err(RsomicsError::Io)?;
                 }
                 write!(out, "\t{chrom}\t{}\t{}", b_rec.start, b_rec.end)
                     .map_err(RsomicsError::Io)?;
                 if !b_rec.rest.is_empty() {
                     write!(out, "\t{}", b_rec.rest).map_err(RsomicsError::Io)?;
                 }
-                writeln!(out, "\t{dist}").map_err(RsomicsError::Io)?;
+                if report_distance {
+                    write!(out, "\t{dist}").map_err(RsomicsError::Io)?;
+                }
+                out.write_all(b"\n").map_err(RsomicsError::Io)?;
             }
         }
     }

@@ -1,7 +1,9 @@
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
 use rsomics_bed_closest::closest;
+use tempfile::NamedTempFile;
 
 fn golden(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -9,139 +11,97 @@ fn golden(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
-#[test]
-fn basic_closest_correctness() {
-    let a = golden("a.bed");
-    let b = golden("b.bed");
-    let mut out = Vec::new();
-    closest(&a, &b, &mut out).unwrap();
-    let result = String::from_utf8(out).unwrap();
-    let lines: Vec<&str> = result.lines().filter(|l| !l.is_empty()).collect();
-    // A1→1 line, A2→2 lines (equidistant tie: B1 and B2 both 100 bp away), A3→1 line = 4.
-    assert_eq!(
-        lines.len(),
-        4,
-        "expected 4 output lines (A2 ties): {result}"
-    );
+fn bedtools_present() -> bool {
+    Command::new("bedtools")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
 
-    // A1 [100,200) closest to B1 [300,400) — distance 100.
-    assert!(
-        lines[0].contains("chr1\t300\t400"),
-        "A1 closest wrong: {}",
-        lines[0]
-    );
-    let dist0: i64 = lines[0]
-        .split('\t')
-        .next_back()
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert_eq!(dist0, 100, "A1 distance wrong: {dist0}");
+fn ours(args: &[&std::path::Path], extra: &[&str]) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rsomics-bed-closest"));
+    cmd.arg(args[0]).arg("-b").arg(args[1]).args(extra);
+    let out = cmd.output().expect("run rsomics-bed-closest");
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
 
-    // A2 [500,600): equidistant to B1 [300,400) and B2 [700,800) — both at distance 100.
-    for line in lines.iter().skip(1).take(2) {
-        let dist: i64 = line
-            .split('\t')
-            .next_back()
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(dist, 100, "A2 distance wrong: {dist}");
-        assert!(
-            line.starts_with("chr1\t500\t600"),
-            "A2 A columns wrong: {}",
-            line
-        );
-    }
-
-    // A3 chr2:[100,200) closest to B3 chr2:[250,350) — distance 50.
-    assert!(
-        lines[3].contains("chr2\t250\t350"),
-        "A3 closest wrong: {}",
-        lines[3]
-    );
-    let dist3: i64 = lines[3]
-        .split('\t')
-        .next_back()
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert_eq!(dist3, 50, "A3 distance wrong: {dist3}");
+fn bedtools(a: &Path, b: &Path, extra: &[&str]) -> String {
+    let out = Command::new("bedtools")
+        .arg("closest")
+        .args(extra)
+        .arg("-a")
+        .arg(a)
+        .arg("-b")
+        .arg(b)
+        .output()
+        .expect("run bedtools");
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
 }
 
 #[test]
-fn overlapping_gives_zero_distance() {
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-    let mut fa = NamedTempFile::new().unwrap();
-    let mut fb = NamedTempFile::new().unwrap();
-    writeln!(fa, "chr1\t100\t200\tA").unwrap();
-    writeln!(fb, "chr1\t150\t250\tB").unwrap();
-    let mut out = Vec::new();
-    closest(fa.path(), fb.path(), &mut out).unwrap();
-    let result = String::from_utf8(out).unwrap();
-    let dist: i64 = result
-        .lines()
-        .next()
-        .unwrap()
-        .split('\t')
-        .next_back()
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert_eq!(dist, 0, "overlapping intervals must have distance 0");
-}
-
-#[test]
-fn bedtools_compat() {
-    let bedtools = Command::new("bedtools").arg("--version").output();
-    if bedtools.is_err() || !bedtools.unwrap().status.success() {
-        eprintln!("bedtools not available — skipping compat test");
+fn matches_bedtools_default() {
+    if !bedtools_present() {
+        eprintln!("SKIP: bedtools not on PATH");
         return;
     }
-
-    let a = golden("a.bed");
-    let b = golden("b.bed");
-
-    let mut ours = Vec::new();
-    closest(&a, &b, &mut ours).unwrap();
-    let ours_str = String::from_utf8(ours).unwrap();
-
-    // bedtools closest (without -d) emits A+B columns only; we always emit
-    // the distance as a trailing column. Strip our distance column before
-    // comparing — the distance value itself is verified in
-    // basic_closest_correctness.
-    fn strip_last_col(s: &str) -> &str {
-        s.rfind('\t').map(|i| &s[..i]).unwrap_or(s)
-    }
-
-    let bt = Command::new("bedtools")
-        .args(["closest", "-a"])
-        .arg(&a)
-        .arg("-b")
-        .arg(&b)
-        .output()
-        .expect("bedtools closest failed");
-    let bt_str = String::from_utf8(bt.stdout).unwrap();
-
-    let mut ours_lines: Vec<&str> = ours_str
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(strip_last_col)
-        .collect();
-    let bt_lines: Vec<&str> = bt_str.lines().filter(|l| !l.is_empty()).collect();
-
-    // Sort both for order-independent comparison.
-    let mut bt_sorted = bt_lines.clone();
-    ours_lines.sort_unstable();
-    bt_sorted.sort_unstable();
-
+    let (a, b) = (golden("a.bed"), golden("b.bed"));
     assert_eq!(
-        ours_lines, bt_sorted,
-        "A+B columns differ from bedtools closest"
+        bedtools(&a, &b, &[]),
+        ours(&[&a, &b], &[]),
+        "default (no -d)"
+    );
+}
+
+#[test]
+fn matches_bedtools_with_distance() {
+    if !bedtools_present() {
+        eprintln!("SKIP: bedtools not on PATH");
+        return;
+    }
+    let (a, b) = (golden("a.bed"), golden("b.bed"));
+    assert_eq!(
+        bedtools(&a, &b, &["-d"]),
+        ours(&[&a, &b], &["-d"]),
+        "-d mode"
+    );
+}
+
+#[test]
+fn overlap_is_zero_book_ended_is_one() {
+    let mut fb = NamedTempFile::new().unwrap();
+    writeln!(fb, "chr1\t150\t250").unwrap(); // overlaps [100,200)
+    writeln!(fb, "chr1\t200\t300").unwrap(); // book-ended with [100,200)
+    let mut fa = NamedTempFile::new().unwrap();
+    writeln!(fa, "chr1\t100\t200").unwrap();
+
+    let mut out = Vec::new();
+    closest(fa.path(), fb.path(), true, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    // Only the overlap (distance 0) is closest; the book-ended one is distance 1.
+    let lines: Vec<&str> = result.lines().collect();
+    assert_eq!(lines.len(), 1, "one closest row: {result}");
+    let dist: i64 = lines[0].rsplit('\t').next().unwrap().parse().unwrap();
+    assert_eq!(dist, 0, "overlap distance must be 0");
+    assert!(
+        lines[0].contains("\t150\t250"),
+        "overlap B chosen: {}",
+        lines[0]
+    );
+}
+
+#[test]
+fn no_b_on_chromosome_emits_placeholder() {
+    let fb = NamedTempFile::new().unwrap();
+    std::fs::write(fb.path(), "chr2\t10\t20\n").unwrap();
+    let fa = NamedTempFile::new().unwrap();
+    std::fs::write(fa.path(), "chr1\t100\t200\n").unwrap();
+
+    let mut out = Vec::new();
+    closest(fa.path(), fb.path(), false, &mut out).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "chr1\t100\t200\t.\t-1\t-1\n"
     );
 }

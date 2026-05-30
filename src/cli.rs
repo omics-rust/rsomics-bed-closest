@@ -23,6 +23,9 @@ pub struct Cli {
     /// Output BED (default: stdout)
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
+    /// Append a signed-distance column (bedtools closest -d)
+    #[arg(short = 'd', long = "distance")]
+    distance: bool,
     #[command(flatten)]
     pub common: CommonFlags,
 }
@@ -46,8 +49,8 @@ impl Tool for Cli {
             &mut stdout_lock
         };
         match self.input {
-            Some(ref p) => closest(p.as_path(), &self.b, out),
-            None => closest_stdin(&self.b, out),
+            Some(ref p) => closest(p.as_path(), &self.b, self.distance, out),
+            None => closest_stdin(&self.b, self.distance, out),
         }
     }
 }
@@ -86,6 +89,17 @@ pub const HELP: HelpSpec = HelpSpec {
                 required: false,
                 default: Some("stdout"),
                 description: "Output BED path",
+                why_default: None,
+            },
+            FlagSpec {
+                short: Some('d'),
+                long: "distance",
+                aliases: &[],
+                value: None,
+                type_hint: Some("bool"),
+                required: false,
+                default: None,
+                description: "Append a signed-distance column (bedtools closest -d)",
                 why_default: None,
             },
             FlagSpec {
