@@ -45,9 +45,10 @@ fn load_b(path: &Path) -> Result<HashMap<String, Vec<BRecord>>> {
             .or_default()
             .push(BRecord { start, end, rest });
     }
-    // Sort each chrom's B records by start.
+    // Stable sort by start so equal-start records keep file order — bedtools
+    // breaks distance ties by B-file order.
     for v in map.values_mut() {
-        v.sort_unstable_by_key(|r| r.start);
+        v.sort_by_key(|r| r.start);
     }
     Ok(map)
 }

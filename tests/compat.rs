@@ -105,3 +105,23 @@ fn no_b_on_chromosome_emits_placeholder() {
         "chr1\t100\t200\t.\t-1\t-1\n"
     );
 }
+
+// Equidistant B records with the same start must come out in B-file order, like
+// bedtools — a stable sort preserves it; sort_unstable could permute them.
+#[test]
+fn equal_start_ties_keep_file_order() {
+    let mut fb = NamedTempFile::new().unwrap();
+    writeln!(fb, "chr1\t30\t40\tX").unwrap();
+    writeln!(fb, "chr1\t30\t40\tY").unwrap();
+    let mut fa = NamedTempFile::new().unwrap();
+    writeln!(fa, "chr1\t10\t20").unwrap();
+
+    let mut out = Vec::new();
+    closest(fa.path(), fb.path(), false, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    let names: Vec<&str> = result
+        .lines()
+        .map(|l| l.rsplit('\t').next().unwrap())
+        .collect();
+    assert_eq!(names, ["X", "Y"], "ties must keep B-file order");
+}
